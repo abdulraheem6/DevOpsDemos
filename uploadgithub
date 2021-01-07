@@ -1,0 +1,33 @@
+#!/bin/bash
+#resource_ip=( `find -type f | xargs ls | cut -c 2-` )
+#output_filename=( `find -type f | awk -F/ '{print $NF}'`)
+today=`date '+%Y_%m_%d__%H_%M_%S'`;
+#NAMESPACE=UAT
+#TEST_SUITE_TYPE=SANITY
+#TEST_CASE_TYPE=UI
+zip -r test_report.zip results/
+#cp *.zip ../Test-Execution-Report-EC
+cd ../../../../
+cd Test-Execution-Report-EC
+mkdir -p $NAMESPACE/$TEST_SUITE_TYPE/$TEST_CASE_TYPE/$today/
+cd ..
+cd $NAMESPACE/$TEST_SUITE_TYPE/$TEST_CASE_TYPE/TAutomation-E2E
+cp test_report.zip ../../../../Test-Execution-Report-EC/$NAMESPACE/$TEST_SUITE_TYPE/$TEST_CASE_TYPE/$today/
+cd ../../../../
+cd Test-Execution-Report-EC
+git pull origin master
+git add $NAMESPACE/$TEST_SUITE_TYPE/$TEST_CASE_TYPE/$today/
+git commit -m "adding report generated at $NAMESPACE-$TEST_SUITE_TYPE-$TEST_CASE_TYPE-$today"
+git push origin master
+cd ..
+cd $NAMESPACE/$TEST_SUITE_TYPE/$TEST_CASE_TYPE/T-Automation-E2E
+# do the loop
+#for i in "${!resource_ip[@]}"; do
+
+#      echo -e "The file being pushed is ${output_filename[$i]}"
+
+#      echo -e "The path to the file is ${resource_ip[$i]}"
+
+    #  curl -H "X-JFrog-Art-Api:$JKEY" -T $PWD${resource_ip[$i]} "https://maybaan.jfrog.io/maybaan/maybaan/Test_Automation_results/$NAMESPACE/$TEST_SUITE_TYPE/$TEST_CASE_TYPE/$today/${resource_ip[$i]}"
+
+    #done
