@@ -1,0 +1,225 @@
+FROM amazoncorretto:11.0.7
+
+RUN yum install openssh-server -y
+RUN yum install openssh-clients -y
+RUN yum install shadow-utils.x86_64 -y
+RUN groupadd -g 1000 rundeck && adduser -u 1000 -g root  rundeck
+
+RUN echo 'rundeck:root' | chpasswd
+
+ADD ./sshd_config /home/rundeck/sshd/
+
+RUN cp /etc/ssh/sshd_config /home/rundeck/sshd/sshd_config.old
+RUN ssh-keygen -t rsa -f /home/rundeck/sshd/ssh_host_rsa_key -N ''
+RUN ssh-keygen -t dsa -f /home/rundeck/sshd/ssh_host_dsa_key -N ''
+RUN ssh-keygen -f /home/rundeck/sshd/ssh_host_ed25519_key -N '' -t ed25519
+RUN ssh-keygen -f /home/rundeck/sshd/ssh_host_ecdsa_key -N '' -t ecdsa -b 521
+
+RUN chown -R rundeck:root /home/rundeck/sshd
+
+USER root
+RUN bash -c 'mkdir -p  /project/tfnr-batch'
+RUN bash -c 'mkdir -p  /logstore/'
+
+RUN bash -c 'chown -R rundeck:root /project /logstore'
+
+RUN yum install -y \
+        python \
+        python-dev \
+        python-pip \
+        python-setuptools \
+        groff \
+        less  java\
+        unzip
+RUN pip install --upgrade awscli
+
+USER rundeck:root
+RUN bash -c 'mkdir /project/batch/log /project/batch/external-systems'
+ADD --chown=rundeck:root batch-config/target/batch-config-1.0.0-SNAPSHOT-bin.zip /project/batch
+RUN bash -c 'unzip /project/-batch/tfnr-batch-config-1.0.0-SNAPSHOT-bin.zip -d /project/batch'
+RUN bash -c 'rm -rf /project/-batch/output'
+RUN bash -c 'ln -s /logstore/batch/output /project/batch/output'
+#RUN bash -c 'mv /project/batch/input /logstore/batch'
+#RUN bash -c 'ln -s /project/batch/input /logstore/batch/input'
+#ADD --chown=rundeck:root ./tfnr-batch_uat.properties /project/batch/external-systems/batch.properties
+#ADD --chown=rundeck:root ./batch.properties /project/batch/external-systems/batch.properties
+#ADD --chown=rundeck:root ./api.synctimeout.uri.properties /project/batch/external-systems
+#ADD --chown=rundeck:root ./input /project/batch/input
+ADD --chown=rundeck:root ./startup.sh /home/rundeck
+ADD --chown=rundeck:root ./setenv.py /home/rundeck
+RUN chmod -R 755 /home/rundeck/startup.sh
+
+
+
+===
+
+FROM node:10.22.1-alpine3.9 as builder
+RUN npm install -g gulp
+WORKDIR /app
+COPY package.json .
+#RUN apk add --no-cache git
+RUN npm install
+COPY . .
+RUN gulp
+
+
+FROM nginx:latest
+# resolves CIS_Docker_CE_v1.1.0 - 4.1 - Image should be created with a non-root user
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=builder /app/temp/respOrg /usr/share/nginx/html
+## add permissions for nginx user
+RUN chown -R nginx:nginx /var/cache/nginx && \
+        chown -R nginx:nginx /var/log/nginx && \
+        chown -R nginx:nginx /etc/nginx/conf.d
+RUN touch /var/run/nginx.pid && \
+        chown -R nginx:nginx /var/run/nginx.pid
+USER nginx
+EXPOSE 8080
+
+FROM amazoncorretto:11.0.7
+
+# install groupadd and adduser
+RUN yum install shadow-utils.x86_64 -y
+
+# resolves CIS_Docker_CE_v1.1.0 - 4.1 - Image should be created with a non-root user
+RUN groupadd -g 5000 spring && adduser -u 5000 -g spring spring 
+USER spring:spring
+
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
+
+VOLUME /tmp
+
+EXPOSE 8080
+
+ENTRYPOINT ["java","-Djava.security.egd=file:/dev/./urandom","-jar","/app.jar"]
+
+
+
+FROM amazoncorretto:11.0.7
+
+# install groupadd and adduser
+RUN yum install shadow-utils.x86_64 -y
+
+# resolves CIS_Docker_CE_v1.1.0 - 4.1 - Image should be created with a non-root user
+RUN groupadd -g 5000 spring && adduser -u 5000 -g spring spring 
+USER spring:spring
+
+ARG JAR_FILE=target/*.jar
+COPY ${JAR_FILE} app.jar
+
+VOLUME /tmp
+
+EXPOSE 8080
+
+ENTRYPOINT ["java","-Xmx1600m","-Dspring.config.location=classpath:application-common.properties,classpath:application.properties","-Djava.security.egd=file:/dev/./urandom","-jar","/app.jar"]
+
+
+EXPOSE 2222
+WORKDIR /home/rundeck
+ENTRYPOINT ["/home/rundeck/startup.sh"]
+
+
+
+Infra:
+
+
+data "aws_eks_cluster" "cluster-ex" {
+  name = module.eks-ex.eks_cluster_id
+}
+
+data "aws_eks_cluster_auth" "cluster-ex" {
+  name = module.eks-ex.eks_cluster_id
+}
+
+module "eks-ex" {
+  source            = "git@github.com:momomIAC/tf-aws-eks-module?ref=v1.13.11"
+  cluster_name      = var.cluster_name
+  node_group_name   = var.node_group_name
+  instance_type     = var.instance_type
+  node_disk_size    = var.node_disk_size
+  worker_node_arns  = var.worker_node_arns
+  eks_control_arns  = var.eks_control_arns
+  enable_autoscaler = var.enable_autoscaler
+  #vpc_cidr                 = "10.150.0.0/16"
+  vpc_id = var.vpc_id
+    #pub_subnets              = ["10.150.1.0/24", "10.150.2.0/24", "10.150.3.0/24", "10.150.4.0/24"]
+  private_subnets          = var.private_subnets
+  asg_desired              = var.asg_desired
+  asg_min                  = var.asg_min
+  asg_max                  = var.asg_max
+  enable_alb               = var.enable_alb
+  enable_exdns             = var.enable_exdns
+  enable_nginx             = var.enable_nginx
+  enable_cloudwatch_logs   = var.enable_cloudwatch_logs
+  eks_cluster_version      = var.eks_cluster_version
+  eks_node_version         = var.eks_node_version
+  remote_access_key        = var.remote_access_key
+  public_access_cidrs      = var.public_access_cidrs
+  public_access_enabled    = var.public_access_enabled
+  environment              = var.environment
+  cluster_sg_name          = var.cluster_sg_name
+  eks_worker_group_sg_name = var.eks_worker_group_sg_name
+  tags                     = var.eks_tags
+  map_additional_iam_users = var.map_additional_iam_users
+  codefresh_ingress_rules = var.codefresh_ingress_rules
+}
+
+
+module "efs-ex" {
+  source                   = "git@github.com:momomIAC/tf-aws-efs-module?ref=v1.13.1"
+  efs_name                 = var.efs_name
+  vpc_id                   = var.vpc_id
+  aws_subnet               = var.aws_subnet
+  creation_token           = var.creation_token
+  eks_nodes_security_group = module.eks-ex.eks_worker_group_sg
+  tags                     = var.efs_tags 
+}
+
+module "eks-helm-metrics-ex" {
+  source     = "git@github.com:momomIAC/tf-aws-eks-helm-metrics-server-module?ref=v1.13.2"
+  depends_on = [module.eks-ex, module.efs-ex]
+}
+
+module "eks-helm-autodiscovery-ex" {
+  source     = "git@github.com:momomIAC/tf-aws-eks-helm-autoscaler-autodiscovery-module?ref=v1.13.0"
+  depends_on = [module.eks-ex, module.efs-ex]
+}
+
+
+module "eks-helm-dashboard-ex" {
+  source     = "git@github.com:momomIAC/tf-aws-eks-helm-k8s-dashboard-module?ref=v1.13.13"
+  depends_on = [module.eks-ex, module.efs-ex]
+}
+
+module "eks-helm-ingress-ex" {
+  source     = "git@github.com:momomIAC/tf-aws-eks-helm-ingressnginx-module?ref=v1.13.1"
+  depends_on = [module.eks-ex, module.efs-ex]
+}
+
+module "eks-helm-datadog-ex" {
+  source     = "git@github.com:momomIAC/tf-aws-eks-datadog-module?ref=v1.13.4"
+  depends_on = [module.eks-ex, module.efs-ex]
+}
+
+module "eks-helm-csi-ex" {
+  source     = "git@github.com:momomIAC/tf-aws-eks-helm-efs-csi-driver-module?ref=v1.13.1"
+  depends_on = [module.eks-ex, module.efs-ex, module.eks-helm-dashboard-ex, module.eks-helm-ingress-ex, module.eks-helm-datadog-ex, module.eks-helm-metrics-ex, module.eks-helm-autodiscovery-ex]
+}
+
+module "eks-helm-namespace-module" {
+  source            = "git@github.com:momomIAC/tf-aws-helm-namespace-module?ref=v1.13.3"
+  depends_on        = [module.eks-ex, module.efs-ex]
+  namespace_name    = var.namespace_name
+}
+
+module "eks-secret-manager" {
+  source = "git@github.com:momomIAC/tf-aws-eks-secret-manager-module?ref=v1.13.2"  
+  depends_on = [module.eks-helm-namespace-module]
+  secret_name                         = var.namespace_name
+  create_secretmanager_policy         = var.create_secretmanager_policy
+  eks_cluster_name                    = var.cluster_name
+  cluster_oidc_issuer                 = module.eks-ex.eks_oidc_issuer
+  cluster_openid_connect_provider_arn = module.eks-ex.openid_connect_provider_arn
+  tags                                = var.secret_manager_tags
+}
