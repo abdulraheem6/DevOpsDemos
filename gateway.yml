@@ -1,0 +1,138 @@
+---
+
+- name: Configure | Defining number of nodes for each layer in wso2
+  set_fact:
+    wso2_gateway_admin_node_count: "{{ groups['wso2_cluster_gateway_admin'] | length }}"
+    wso2_gateway_node_count: "{{ groups['wso2_cluster_gateway'] | length }}"
+    wso2_identity_server_node_count: "{{ groups['wso2_cluster_identity_server'] | length }}"
+    wso2_traffic_manager_node_count: "{{ groups['wso2_cluster_traffic_manager'] | length }}"
+    wso2_publisher_node_count: "{{ groups['wso2_cluster_publisher'] | length }}"
+    wso2_store_node_count: "{{ groups['wso2_cluster_store'] | length }}"
+  ignore_errors: true
+  register: wso2_node_results
+
+- name: Configure | Printing number of nodes
+  debug:
+    msg:
+     "{{ wso2_node_results }}"
+
+- name: Configure |  Check if Service Exists
+  stat: path='{{ wso2_system_services_dir }}/wso2.service'
+  register: service_status
+
+- name: Configure |   Stop wso2 service
+  systemd: state=stopped name=wso2
+  when: service_status.stat.exists
+
+- name: Configure |  Making sure wso2 service is stopped in all cases
+  shell: sudo kill -9 `ps -ef | grep wso2 | grep -v grep | awk '{print $2}'`
+  ignore_errors: True
+
+- name: Configure |  Make sure the wso2 auto start script to the systemd directory for WSO2 version {{ wso2_version }}
+  template:
+   src: "{{ wso2_service_template_file }}"
+   dest: '{{ wso2_system_services_dir }}/wso2.service'
+
+# Copy Synapse configs from old version if upgrade
+- name: Configure | Copy Synapse configs from old version to new version
+  shell: "sudo rsync -avh /{{ wso2_workspace }}/{{ artifactory_wso2_gateway_conf_dir }}/wso2am-2.1.0/repository/deployment/server/synapse-configs /{{ wso2_workspace }}/{{ wso2_gateway_workspace_dir }}/repository/deployment/server"
+  when: ( wso2_version == "2.6.0" )
+
+- name: Configure |   Cleanup wso2-config folder on localhost if it exists
+  file: path=/{{ wso2_download_dir }}/{{ artifactory_wso2_conf_dir }} state=absent
+  ignore_errors: true
+  delegate_to: localhost
+
+- name: Configure |   Creating wso2 folder
+  file: path=/{{ wso2_download_dir }}/{{ artifactory_wso2_conf_dir }} state=directory
+  delegate_to: localhost
+
+- name: Configure |   Download Config files from Artifactory
+  command: chdir=/{{ wso2_download_dir }} wget -r -l30 -S -N -nH --cut-dirs=2 --no-parent --reject="index.html*" --header="X-JFrog-Art-Api:{{ artifactory_api_key }}" {{ artifactory_download_url }}/{{ artifactory_pkgs_dir }}/{{ artifactory_wso2_conf_dir }}/{{ artifactory_wso2_gateway_conf_dir }}/
+  timeout: 200
+  delegate_to: localhost
+
+- name: Configure |   Get relative paths of source directories
+  local_action: shell cd /{{ wso2_download_dir }}/{{ artifactory_wso2_conf_dir }}; find -type d | cut -c 2- | tail -n +2 | xargs -0 sh -c 'for filename; do echo "${filename}"; done' arg
+  register: directory_relative_paths
+
+- name: Configure |   Get source file relative paths
+  local_action: shell cd /{{ wso2_download_dir }}/{{ artifactory_wso2_conf_dir }}; find -type f | cut -c 2- | xargs -0 sh -c 'for filename; do echo "${filename}"; done' arg
+  register: file_relative_paths
+
+- name: Configure |   Create destination directories manually as Ansible template module cannot create directories
+  file: dest="/{{ wso2_workspace }}/{{ item }}" state=directory
+  with_items: "{{ directory_relative_paths.stdout_lines }}"
+
+- name: Configure |   Template files recursively into remote folder
+  template: src="/{{ wso2_download_dir }}/{{ artifactory_wso2_conf_dir }}/{{ item }}" dest="/{{ wso2_workspace }}/{{ item }}"
+  with_items: "{{ file_relative_paths.stdout_lines }}"
+
+################### Extra steps for gateway server ######################
+
+- name: Configure |  Remove the config properties folder if already present
+  file:
+   state: absent
+   dest: /{{ wso2_workspace }}/configuration
+
+# Create the config properties file based on the template
+- name: Configure |  Create config.properties file from template
+  template:
+    src: "config.properties.j2"
+    dest: /{{ wso2_download_dir }}/config.properties
+
+- name: Configure | Ensure that configuration directory exist under project
+  file:
+    path: /{{ wso2_workspace }}/configuration/
+    state: directory
+    owner: "{{ wso2_user }}"
+    group: "{{ wso2_users_group }}"
+    mode: 0755
+
+# Copy the new config properties file to the destination
+- name: Configure |  Copy config.properties to destination
+  copy:
+    src: /{{ wso2_download_dir }}/config.properties
+    dest: /{{ wso2_workspace }}/configuration/
+    mode: 0664
+    owner: "{{ wso2_user }}"
+    group: "{{ wso2_users_group }}"
+    remote_src: yes
+
+- name: Configure |  copy certificates from old installation
+  copy:
+   src: "/{{ wso2_workspace }}/{{ artifactory_wso2_gateway_conf_dir }}/wso2am-2.1.0/repository/resources/security/{{ item }}"
+   dest: '/{{ wso2_workspace }}/{{ wso2_gateway_workspace_dir }}/repository/resources/security'
+   remote_src: yes
+  with_items:
+    - client-truststore.jks
+    - wso2carbon.jks
+  ignore_errors: yes
+  when: ( wso2_version == "2.6.0" )
+
+- name: Configure |  Change owner and group recursively for WSO2
+  file:
+    path: "/{{ wso2_workspace }}/{{ wso2_gateway_workspace_dir }}/"
+    owner: "{{ wso2_user }}"
+    group: "{{ wso2_users_group }}"
+    recurse: yes
+    mode: 0755
+
+- name: Configure |  Enable systemctl when for first time
+  shell: "systemctl enable wso2"
+  become: yes
+
+##################### Clean up the temp files on the localhost #############################################
+
+- name: Configure |  Cleanup wso2-config folder on localhost
+  file: path=/{{ wso2_download_dir }}/{{ artifactory_wso2_conf_dir }} state=absent
+  ignore_errors: true
+  delegate_to: localhost
+
+- name: Configure |  Cleanup up the properties file from /tmp
+  file: path=/{{ wso2_download_dir }}/config.properties state=absent
+  ignore_errors: true
+
+- name: Configure | Display warning about service restart
+  debug:
+    msg: "***** The WSO2 Service has not been started, start/stop using wso2_control role ************"
