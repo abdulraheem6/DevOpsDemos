@@ -1,0 +1,48 @@
+---
+
+- name: create_dashboard | Clean up the temp directory on ansible server if already exists
+  file:
+    path: /tmp/grafana-dashboards
+    state: absent
+  delegate_to: localhost
+
+- name: create_dashboard | Create temporary directory on ansible server
+  file:
+    path: /tmp/grafana-dashboards/
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+
+- name: create_dashboard | Download the Grafana Dashboard json files on ansible server
+  get_url:
+      url: "{{ artifactory_download_url }}/{{ artifactory_pkgs_dir }}/{{ grafana_dashboard_directory }}/{{ grafana_dashboard_env_directory }}/{{item}}"
+      dest: "/tmp/grafana-dashboards/{{item}}.j2"
+      headers: "X-JFrog-Art-Api:{{ artifactory_api_key }}"
+  with_items: "{{ grafana_dashboards }}"  
+  delegate_to: localhost
+
+- name: create_dashboard | template downloaded json into temp directory
+  template:
+    src: "/tmp/grafana-dashboards/{{item}}.j2"
+    dest: "/tmp/{{item}}"
+    owner: root
+    group: root
+    mode: "0755"
+  with_items: "{{ grafana_dashboards }}" 
+
+- include: grafancreate.yml
+  vars:
+    grafana_json_file: "{{item}}"
+  with_items: "{{ grafana_dashboards }}"    
+
+- name: create_dashboard | Clean up the temp directory created on ansible server
+  file:
+    path: /tmp/grafana-dashboards/
+    state: absent
+  delegate_to: localhost
+
+- name: create_dashboard | Clean up the json files from the grafana server
+  file:
+    path: "/tmp/{{item}}"
+    state: absent
+  with_items: "{{ grafana_dashboards }}"
