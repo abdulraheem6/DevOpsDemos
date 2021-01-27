@@ -1,0 +1,79 @@
+---
+######### Sensu backend configuration ############
+
+####### backend configuration #######
+
+state-dir: "/var/lib/sensu/sensu-backend"
+#cache-dir: "/var/cache/sensu/sensu-backend"
+#config-file: "/etc/sensu/backend.yml"
+#debug: false
+#deregistration-handler: "example_handler"
+log-level: "warn" # available log levels: panic, fatal, error, warn, info, debug
+
+####### agent configuration #######
+
+#agent-host: "[::]" # listen on all IPv4 and IPv6 addresses
+#agent-port: 8081
+
+####### api configuration #######
+
+#api-listen-address: "[::]:8080" # listen on all IPv4 and IPv6 addresses
+{%  for host in groups['sensu_go_backend_ha'] %}
+{% if ansible_hostname == host %}
+api-url: "http://{{ hostvars[host]['ansible_default_ipv4']['address'] }}:8080"
+{% endif %}
+{% endfor %}
+
+####### dashboard configuration #######
+
+#dashboard-cert-file: "/path/to/ssl/cert.pem"
+#dashboard-key-file: "/path/to/ssl/key.pem"
+#dashboard-host: "[::]" # listen on all IPv4 and IPv6 addresses
+dashboard-port: 3000
+
+####### ssl configuration #######
+
+#cert-file: "/path/to/ssl/cert.pem"
+#key-file: "/path/to/ssl/key.pem"
+#trusted-ca-file: "/path/to/trusted-certificate-authorities.pem"
+#insecure-skip-tls-verify: false
+
+##
+# store configuration
+##
+##########################start here
+
+{%  for host in groups['sensu_go_backend_ha'] %}
+{% if inventory_hostname == host %}
+etcd-advertise-client-urls: "http://{{ hostvars[host]['ansible_default_ipv4']['address'] }}:2379"
+etcd-listen-client-urls: "http://{{ hostvars[host]['ansible_default_ipv4']['address'] }}:2379"
+etcd-listen-peer-urls: "http://0.0.0.0:2380"
+etcd-initial-advertise-peer-urls: "http://{{ hostvars[host]['ansible_default_ipv4']['address'] }}:2380"
+{% endif %}
+{% endfor %}
+etcd-initial-cluster: "{% for host in groups['sensu_go_backend_ha'] %}{{ hostvars[host].inventory_hostname }}=http://{{ hostvars[host].ansible_host }}:2380{% if not loop.last %},{% endif %}{% endfor %}"
+etcd-initial-cluster-state: "new"
+etcd-initial-cluster-token: ""
+etcd-name: "{{ inventory_hostname }}"
+
+####################Ends here
+
+#etcd-advertise-client-urls: "http://localhost:2379"
+#etcd-cert-file: "/path/to/ssl/cert.pem"
+#etcd-client-cert-auth: false
+#etcd-initial-advertise-peer-urls: "http://127.0.0.1:2380"
+#etcd-initial-cluster: "default=http://127.0.0.1:2380"
+#etcd-initial-cluster-state: "new" # new or existing
+#etcd-initial-cluster-token: "sensu"
+#etcd-key-file: "/path/to/ssl/key.pem"
+#etcd-listen-client-urls: "http://127.0.0.1:2379"
+#etcd-listen-peer-urls: "http://127.0.0.1:2380"
+#etcd-name: "default"
+#etcd-peer-cert-file: "/path/to/ssl/cert.pem"
+#etcd-peer-client-cert-auth: false
+#etcd-peer-key-file: "/path/to/ssl/key.pem"
+#etcd-peer-trusted-ca-file: "/path/to/ssl/key.pem"
+#etcd-trusted-ca-file: "/path/to/ssl/key.pem"
+#no-embed-etcd: false
+#etcd-cipher-suites
+#  - TLS_EXAMPLE
