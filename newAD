@@ -1,0 +1,81 @@
+---
+
+- name: join | update ad_auth required tools
+  yum:
+    name: "{{ item }}"
+    state: latest
+  with_items: "{{ ad_auth_required_tools }}"  
+  register: yum
+
+- name: join |  Installing pexpect package using pip
+  pip:
+    name: pexpect
+    state: latest
+  ignore_errors: true
+  register: pexpect_install
+
+- name: join |  Ignoring the existing pexpect installation on failure of normal installation  
+  shell: sudo pip install --ignore-installed pexpect
+  when: pexpect_install.failed
+
+- name: join | Rebooting Virtual Machine
+  shell: sleep 2 && shutdown -r now "Ansible reboot"
+  async: 1
+  become: yes
+  become_method: sudo
+  poll: 0
+  ignore_errors: true
+  when: yum.changed
+
+- name: join | Waiting for VM to start...
+  wait_for:
+    host: "{{ ansible_host }}"
+    port: 22
+    delay: 30
+    timeout: 300
+    state: started
+  delegate_to: localhost
+  when: yum.changed
+
+- name: join | Check if machine is bound
+  shell: /bin/bash -c "realm list | grep sssd"
+  register: realmd_bound
+  changed_when: false
+  ignore_errors: true
+
+- name: join | Join system to AD
+  expect:
+    command: /usr/sbin/realm join -U {{ ad_join_bind_user }} momos.com --verbose
+    responses:
+      Password for *: "{{ ad_join_bind_password }}"
+  when: realmd_bound|failed
+  register: adjoin
+
+- name: join | Allow password authentication to sshd_config
+  lineinfile:
+    dest: /etc/ssh/sshd_config
+    regexp: '^\s*PasswordAuthentication no*$'
+    line: 'PasswordAuthentication yes'
+    backrefs: yes
+  notify:
+    - restart sssd
+  when: realmd_bound|failed
+
+- name: join | Rebooting Virtual Machine after joing to AD
+  shell: sleep 2 && shutdown -r now "Ansible reboot"
+  async: 1
+  become: yes
+  become_method: sudo
+  poll: 0
+  ignore_errors: true
+  when: adjoin.changed
+
+- name: join | Waiting for VM to start after join to AD .......
+  wait_for:
+    host: "{{ ansible_host }}"
+    port: 22
+    delay: 30
+    timeout: 300
+    state: started
+  delegate_to: localhost
+  when: adjoin.changed
