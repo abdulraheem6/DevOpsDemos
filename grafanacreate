@@ -1,0 +1,30 @@
+---
+
+
+- name: create_dashboard | replace {{ VAR_PREFIX }}
+  shell: sed -i 's/${VAR_PREFIX}/{{ VAR_PREFIX }}/g' /tmp/{{grafana_json_file}}
+  become: yes
+  
+- name: create_dashboard | Display the JSON file content
+  shell: cat /tmp/{{grafana_json_file}}
+  register: result
+
+- name: create_dashboard | Save the Json data to a Variable as a Fact
+  set_fact:
+    jsondata: "{{ result.stdout | from_json }}"
+
+- name: create_dashboard | Create Grafana Dashboard from {{ grafana_json_file }}
+  uri:
+    url: "http://{{ ansible_default_ipv4.address }}:3000/api/dashboards/db"
+    method: POST
+    headers: 
+      Authorization: "Bearer {{ grafana_dashboard_api_key }}"
+    body: '{ "dashboard": {{ jsondata }} }'
+    body_format: json
+    return_content: yes
+  register: create_dashboard_grafana
+  ignore_errors: true  
+
+- name: create_dashboard | Display output
+  debug: msg="{{ create_dashboard_grafana }}"
+  ignore_errors: True
