@@ -89,3 +89,245 @@ RUN   echo "export LD_LIBRARY_PATH=/opt/oracle/instantclient_19_9:$LD_LIBRARY_PA
 COPY ./sauce-connect/createSCTunnels.sh /app/sauce-connect/createSCTunnels.sh
 RUN chmod -R a+x /app/sauce-connect/createSCTunnels.sh
 ENTRYPOINT ["/bin/bash"]
+
+
+
+
+==
+
+
+packr..tablu.json
+{
+  "builders": [
+      {
+        "type": "amazon-ebs",
+        "ami_name": "Tableau-packer-{{isotime \"02-Jan-06 03_04_05\" | clean_resource_name}}",
+        "region": "{{user `aws_region`}}",
+        "ami_regions": ["us-east-1"],
+        "instance_type": "{{ user `instance_type`}}",
+        "encrypt_boot": true,
+        "source_ami_filter": {
+          "filters": {
+            "virtualization-type": "hvm",
+            "name": "amzn2-ami-hvm-2.0.*-x86_64-gp2",
+            "root-device-type": "ebs"
+          },
+          "owners": ["amazon"],
+          "most_recent": true
+        },
+        "ssh_username": "ec2-user",
+        "vpc_id": "{{user `vpc_id`}}",
+        "subnet_id": "{{user `subnet_id`}}",
+        "associate_public_ip_address": true,
+        "tags": {
+          "Name": "Tableau-Golden-Image", 
+          "OS_Version": "Amazon Linux 2",
+          "Base_AMI_Name": "{{ .SourceAMIName }}"
+        },
+        "run_tags": {
+          "Name": "tableau-packer"
+        },
+      "launch_block_device_mappings": [
+        {
+          "device_name": "/dev/xvda",
+          "volume_size": 60,
+          "volume_type": "gp2",
+          "delete_on_termination": true
+        }
+      ]
+    }],   
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "lsblk",
+        "df -h"
+      ]
+    }, 
+    {
+      "type": "shell",
+      "script": "tableau_base_install.sh"
+    }
+   
+  ],
+    "post-processors": [
+      {
+        "type": "manifest",
+        "output": "manifest.json",
+        "strip_path": true
+      }
+    ]        
+}
+
+
+==
+
+tabinstallscrip.
+
+#!/bin/bash
+
+#[Primary Server]
+sudo yum -y update
+sudo yum  -y install fontconfig fuse gdb chrpath freeglut fuse-libs libXcomposite libXcursor libXi libXrandr libXrender libxslt libXtst mesa-libEGL
+
+# Downloading Tableau 
+wget https://downloads.tableau.com/tssoftware/tableau-server-2020-4-0.x86_64.rpm
+sudo yum  -y install tableau-server-2020-4-0.x86_64.rpm
+sudo useradd tadmin
+echo -e "tableau@123\ntableau@123" | sudo passwd tadmin
+
+# Downloading Postgres for Tableau
+wget https://downloads.tableau.com/drivers/linux/yum/tableau-driver/tableau-postgresql-odbc-09.06.0500-1.x86_64.rpm
+sudo yum  -y install tableau-postgresql-odbc-09.06.0500-1.x86_64.rpm
+
+# Downloading Oracle for Tableau
+wget https://downloads.tableau.com/drivers/linux/yum/tableau-driver/tableau-oracle-12.1.0.2.0-1.x86_64.rpm
+sudo yum -y install tableau-oracle-12.1.0.2.0-1.x86_64.rpm
+
+# Installing DataDog Agent
+sudo DD_AGENT_MAJOR_VERSION=7 DD_API_KEY=086685fd6 DD_SITE="datadoghq.com" bash -c "$(curl -L https://s3.amazonaws.com/dd-agent/scripts/install_script.sh)"
+
+
+var.sjon
+
+{
+  "aws_access_key": "${AWS_ACCESS_KEY_ID}",
+  "aws_secret_key": "${AWS_SECRET_ACCESS_KEY}",
+  "aws_region": "us-east-1",
+  "vpc_id": "vpc-7d5cd1",
+  "subnet_id": "subnet-08b006", 
+  "ami_name": "Tableau-AMZN-{{isotime \"02-Jan-06 03_04_05\"}}",
+  "instance_type": "m5.4xlarge"
+}
+
+
+
+penta baseinstall
+
+!/bin/bash
+
+sudo yum -y update
+# Install needed Java version
+sudo yum -y install java-11-amazon-corretto-headless
+java -version
+
+# Create Pentaho user
+sudo useradd pentaho
+sudo usermod -aG wheel pentaho
+
+# Download and Install Pentaho
+whoami
+sudo -i -u pentaho bash << EOF
+echo "In"
+whoami
+cd /home/pentaho
+wget https://phoenixnap.dl.sourceforge.net/project/pentaho/Pentaho%209.1/server/pentaho-server-ce-9.1.0.0-324.zip
+unzip pentaho-server-ce-9.1.0.0-324.zip 
+EOF
+echo "Out"
+whoami
+
+whoami
+sudo -i -u ec2-user bash << EOF
+ls /tmp/
+sudo cp /tmp/pentaho.service /etc/systemd/system/pentaho.service
+sudo systemctl enable pentaho.service
+sudo systemctl daemon-reload
+EOF
+echo "Out"
+whoami
+
+
+pentapacket.json
+{
+  "builders": [
+      {
+        "type": "amazon-ebs",
+        "ami_name": "Pentaho-packer-{{isotime \"02-Jan-06 03_04_05\" | clean_resource_name}}",
+        "region": "{{user `aws_region`}}",
+        "ami_regions": ["us-east-1"],
+        "instance_type": "{{ user `instance_type`}}",
+        "encrypt_boot": true,
+        "source_ami_filter": {
+          "filters": {
+            "virtualization-type": "hvm",
+            "name": "amzn2-ami-hvm-2.0.*-x86_64-gp2",
+            "root-device-type": "ebs"
+          },
+          "owners": ["amazon"],
+          "most_recent": true
+        },
+        "ssh_username": "ec2-user",
+        "vpc_id": "{{user `vpc_id`}}",
+        "subnet_id": "{{user `subnet_id`}}",
+        "associate_public_ip_address": true,
+        "tags": {
+          "Name": "Pentaho-Golden-Image", 
+          "OS_Version": "Amazon Linux 2",
+          "Base_AMI_Name": "{{ .SourceAMIName }}"
+        },
+        "run_tags": {
+          "Name": "pentaho-packer"
+        },
+      "launch_block_device_mappings": [
+        {
+          "device_name": "/dev/xvda",
+          "volume_size": 50,
+          "volume_type": "gp2",
+          "delete_on_termination": true
+        }
+      ]
+    }],   
+  "provisioners": [
+    {
+      "type": "shell",
+      "inline": [
+        "lsblk",
+        "df -h"
+      ]
+    }, 
+    {
+      "type": "file",
+      "source": "pentaho.service",
+      "destination": "/tmp/pentaho.service"
+    },
+    {
+      "type": "shell",
+      "script": "pentaho_base_install.sh"
+    }
+  ],
+    "post-processors": [
+      {
+        "type": "manifest",
+        "output": "manifest.json",
+        "strip_path": true
+      }
+    ]        
+}
+
+{
+  "aws_access_key": "${AWS_ACCESS_KEY_ID}",
+  "aws_secret_key": "${AWS_SECRET_ACCESS_KEY}",
+  "aws_region": "us-east-1",
+  "vpc_id": "vpc-d5cd1",
+  "subnet_id": "subnet-08d6b006", 
+  "ami_name": "Pentaho-AMZN-{{isotime \"02-Jan-06 03_04_05\"}}",
+  "instance_type": "m5.xlarge"
+}
+
+pen.sevrive.
+[Unit]
+Description=Pentaho Systemctl script
+After=NetworkManager.service
+
+[Service]
+TimeoutStartSec=600
+TimeoutStopSec=600
+Type=forking
+ExecStart=/home/pentaho/pentaho-server/start-pentaho.sh
+ExecStop=/home/pentaho/pentaho-server/stop-pentaho.sh
+ExecReload=/home/pentaho/pentaho-server/stop-pentaho.sh && /home/pentaho/pentaho-server/start-pentaho.sh
+User=pentaho
+Group=pentaho
+[Install]
+WantedBy=multi-user.target
