@@ -1,1 +1,194 @@
 
+#!/bin/bash
+
+s3_bucket_name="${s3_bucket_name}"
+environment="${environment}"
+aws_region="${aws_region}"
+worker_count="${worker_count}"
+
+if [ $worker_count -eq 0 ] ; then
+    echo "Creating only primary node"
+else    
+    HOSTNAME=`hostname`
+    IP=`hostname -I | awk '{print $1}'`
+    PRIMARY_HOST="$IP $HOSTNAME"
+    echo $PRIMARY_HOST
+    aws ssm put-parameter --name /tableau/$environment/tableau_host_primary --type String --value "$PRIMARY_HOST" --overwrite --region $aws_region
+fi
+
+sleep 6s
+
+aws ssm put-parameter --name /tableau/$environment/tableau_primary --type String --value "InProgress" --overwrite --region $aws_region
+
+whoami
+sudo -i -u ec2-user bash << EOF
+echo "In"
+whoami
+sudo /opt/tableau/tableau_server/packages/scripts.20203.20.0918.1727/initialize-tsm --accepteula
+sudo usermod -G tsmadmin -a tadmin
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm settings import -f /opt/tableau/tableau_server/packages/scripts.20203.20.0918.1727/config.json
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm pending-changes apply
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm licenses activate -t
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm register --template > tregistration.json
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm register --file tregistration.json
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm pending-changes apply
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm initialize --start-server --request-timeout 1800
+sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tabcmd initialuser --server 'localhost:80' --username 'tabadmin' --password 'password'
+sleep 10
+EOF
+echo "Out"
+whoami
+
+if [ $worker_count -eq 0 ] ; then
+    echo "Tableau Primary Node has been created"
+else
+    whoami
+    sudo -i -u ec2-user bash << EOF
+    echo "In"
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology nodes get-bootstrap-file --file bootstrap.json
+    sudo aws s3 cp bootstrap.json s3://$s3_bucket_name/
+EOF
+echo "Out"
+whoami
+fi     
+
+aws ssm put-parameter --name /tableau/$environment/tableau_primary --type String --value "Created" --overwrite --region $aws_region
+
+sleep 360
+
+if [ $worker_count -eq 0 ] ; then
+    echo "Table Primary Node has been created"
+else
+    # Waiting for worker nodes to get initialized
+
+    until [ $(aws ssm get-parameter --name /tableau/$environment/tableau_worker --output text --query Parameter.Value --region $aws_region) = *"InProgress"* ];
+    do
+    echo "Tableau worker nodes are getting initialized......"
+    sleep 10s
+    if [ $(aws ssm get-parameter --name /tableau/$environment/tableau_worker --output text --query Parameter.Value --region $aws_region) != "InProgress" ]; then
+        echo "Tableau worked nodes setup finished"
+        status=$(aws ssm get-parameter --name /tableau/$environment/tableau_worker --output text --query Parameter.Value --region $aws_region)
+        echo "Tableau worked nodes are $status"
+        if [$status != "Created"]; then
+            exit 3
+            echo "Automation $status"
+        fi   
+        break
+    fi
+    done
+
+    for i in `seq 1 $worker_count`;
+    do
+        HOSTS_LINE=$(aws ssm get-parameter --name /tableau/$environment/tableau_host_worker$i --output text --query Parameter.Value --region $aws_region)
+        echo "adding $HOSTS_LINE";
+        if [ -n "$(grep $HOSTS_LINE /etc/hosts)" ]
+            then
+                echo "$HOSTS_LINE already exists"
+            else
+                echo "Adding $HOSTS_LINE to your etc hosts file";
+                sudo -- sh -c -e "echo '$HOSTS_LINE' >> /etc/hosts";
+
+                if [ -n "$(grep $HOSTS_LINE /etc/hosts)" ]
+                    then
+                        echo "$HOSTS_LINE was added succesfully \n $(grep $HOSTS_LINE /etc/hosts)";
+                    else
+                        echo "Failed to Add $HOSTS_LINE, Try again!";
+                fi
+        fi
+    echo $i
+    done
+
+    for i in `seq 1 $worker_count`;
+    do
+        j=$(($i + 1))
+        echo $j    
+        sudo -i -u ec2-user bash << EOF
+        sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr clustercontroller -c 1
+EOF
+    done
+
+    sleep 60
+
+    sudo -i -u ec2-user bash << EOF
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm pending-changes apply --ignore-warnings --ignore-prompt
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm stop
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm pending-changes list
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology list-nodes -v
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology deploy-coordination-service -n node1,node2,node3 --ignore-prompt
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm start
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm status
+EOF
+
+    sudo -i -u ec2-user bash << EOF
+    if [ $worker_count -eq 0 ] ; then
+        sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node1 -pr pgsql -c 1
+    else
+        sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node2 -pr pgsql -c 1
+    fi     
+EOF
+
+    for i in `seq 1 $worker_count`;
+    do
+        j=$(($i + 1))
+        echo $j    
+        sudo -i -u ec2-user bash << EOF
+        sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr clientfileservice -c 1
+EOF
+    done
+
+    sudo -i -u ec2-user bash << EOF
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm pending-changes apply --ignore-warnings --ignore-prompt
+EOF
+
+    for i in `seq 1 $worker_count`;
+    do
+        j=$(($i + 1))
+        echo $j    
+        sudo -i -u ec2-user bash << EOF
+        sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr gateway -c 1
+        sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr filestore -c 1
+EOF
+    done
+
+    sudo -i -u ec2-user bash << EOF
+    sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm pending-changes apply --ignore-warnings --ignore-prompt
+EOF
+
+fi
+
+# Giving access on the log files for Datadog agent to read the logs
+cd /var/opt/tableau/
+sudo chmod -R +x tableau_server/
+sudo chmod -R +r tableau_server/
+
+# Enabling the log for Datadog and restarting datadog agent 
+echo -e "logs_enabled: \"true\"\n" >> /etc/datadog-agent/datadog.yaml
+sudo systemctl restart datadog-agent
+sudo systemctl status datadog-agent
+
+
+# sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology cleanup-coordination-service
+
+# Cleaning up the created ssm parameters
+aws ssm delete-parameter --name /tableau/$environment/tableau_host_primary --region $aws_region
+aws ssm delete-parameter --name /tableau/$environment/tableau_primary --region $aws_region
+
+if [ $worker_count -eq 0 ] ; then
+    echo "Primary Tableau node related parameters have been deleted"
+else
+    aws ssm delete-parameter --name /tableau/$environment/tableau_worker --region $aws_region
+    for i in `seq 1 $worker_count`;
+    do
+        aws ssm delete-parameter --name /tableau/$environment/tableau_host_worker$i --region $aws_region
+    echo $i
+    done
+    echo "All the tableau-ha installation related ssm parameters have been deleted"
+fi     
+
+# The below tableau commands can be added/removed as needed near lines 148-149 in this script
+        # sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr vizqlserver -c 2
+        # sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr vizportal -c 2
+        # sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr backgrounder -c 2
+        # sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr cacheserver -c 2
+        # sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr searchserver -c 1
+        # sudo /opt/tableau/tableau_server/packages/bin.20203.20.0918.1727/tsm topology set-process -n node$j -pr dataserver -c 2
