@@ -1,2 +1,197 @@
-djalfjadsd
-dsjfadlj
+data "aws_eks_cluster" "cluster" {
+  name = module.eks.eks_cluster_id
+}
+
+data "aws_eks_cluster_auth" "cluster" {
+  name = module.eks.eks_cluster_id
+}
+
+module "eks" {
+  source                   = "git@github.com:maybaanIAC/tf-aws-eks-module?ref=v1.13.15"
+  region                   = var.aws_region
+  cluster_name             = var.cluster_name
+  node_groups              = var.node_groups
+  worker_node_arns         = var.worker_node_arns
+  eks_control_arns         = var.eks_control_arns
+  enable_autoscaler        = var.enable_autoscaler
+  vpc_id                   = var.vpc_id
+  pub_subnets              = var.pub_subnets
+  private_subnets          = var.private_subnets
+  enable_alb               = var.enable_alb
+  enable_exdns             = var.enable_exdns
+  enable_nginx             = var.enable_nginx
+  enable_cloudwatch_logs   = var.enable_cloudwatch_logs
+  eks_cluster_version      = var.eks_cluster_version
+  remote_access_key        = var.remote_access_key
+  public_access_cidrs      = var.public_access_cidrs
+  public_access_enabled    = var.public_access_enabled
+  environment              = var.environment
+  cluster_sg_name          = var.cluster_sg_name
+  eks_worker_group_sg_name = var.eks_worker_group_sg_name
+  tags                     = var.eks_tags
+  map_additional_iam_users = var.map_additional_iam_users
+  codefresh_ingress_rules  = var.codefresh_ingress_rules
+  map_migration            = true
+  map_migrated_tag         = var.map_eks_server_id
+  map_migrated_app_tag     = var.map_app_id
+}
+
+
+module "efs" {
+  source = "git@github.com:maybaanIAC/tf-aws-efs-module?ref=v1.13.7"
+
+  map_migration            = true
+  map_migrated_tag         = var.map_efs_server_id
+  map_migrated_app_tag     = var.map_app_id
+  efs_name                 = var.efs_name
+  vpc_id                   = var.vpc_id
+  aws_subnet               = var.private_subnets
+  creation_token           = var.creation_token
+  eks_nodes_security_group = module.eks.eks_worker_group_sg
+  tags                     = var.efs_tags
+}
+
+module "mount_point" {
+  source                   = "git@github.com:maybaanIAC/tf-aws-EFS-mounted-Ec2?ref=v1.13.5"
+  depends_on               = [module.efs]
+  ami                      = var.ami
+  instance_type            = var.instance_type
+  aws_subnet               = module.efs.efs_mount_target_subnet_id
+  remote_access_key        = var.remote_access_key
+  eks_nodes_security_group = [module.efs.efs_security_group_id]
+  mount_target_ipaddress   = module.efs.cluster_efs_ip_address
+  mount_point              = var.mount_point
+  efs_id                   = module.efs.cluster_efs_id
+}
+
+module "eks-helm-datadog" {
+  source     = "git@github.com:maybaanIAC/tf-aws-eks-datadog-module?ref=v1.13.5"
+  depends_on = [module.eks-helm-aws-load-balancer-controller]
+}
+
+
+
+
+module "eks-helm-metrics" {
+  source     = "git@github.com:maybaanIAC/tf-aws-eks-helm-metrics-server-module?ref=v1.13.3"
+  depends_on = [module.eks-helm-datadog]
+}
+
+module "eks-helm-autodiscovery" {
+  source       = "git@github.com:maybaanIAC/tf-aws-eks-helm-autoscaler-autodiscovery-module?ref=v1.13.5"
+  depends_on   = [module.eks-helm-datadog]
+  cluster_name = var.cluster_name
+}
+
+
+module "eks-helm-dashboard" {
+  source     = "git@github.com:maybaanIAC/tf-aws-eks-helm-k8s-dashboard-module?ref=v1.13.14"
+  depends_on = [module.eks-helm-datadog]
+}
+
+module "eks-helm-csi" {
+  source     = "git@github.com:maybaanIAC/tf-aws-eks-helm-efs-csi-driver-module?ref=v1.13.1"
+  depends_on = [module.eks-helm-dashboard]
+}
+
+module "eks-helm-namespace-module" {
+  source         = "git@github.com:maybaanIAC/tf-aws-helm-namespace-module?ref=v1.13.5"
+  depends_on     = [module.efs]
+  namespace_name = var.namespace_name
+}
+
+module "eks-helm-PausePods" {
+  source     = "git@github.com:maybaanIAC/tf-aws-eks-helm-PausePods?ref=v1.13.4"
+  depends_on = [module.eks, module.efs]
+}
+
+module "eks-secret-manager" {
+  source                              = "git@github.com:maybaanIAC/tf-aws-eks-secret-manager-module?ref=v1.13.7"
+  depends_on                          = [module.eks-helm-namespace-module]
+  secret_name                         = var.namespace_name
+  create_secretmanager_policy         = var.create_secretmanager_policy
+  eks_cluster_name                    = var.cluster_name
+  cluster_oidc_issuer                 = module.eks.eks_oidc_issuer
+  cluster_openid_connect_provider_arn = module.eks.openid_connect_provider_arn
+  map_migration                       = true
+  map_migrated_tag                    = var.map_secret_manager_server_id
+  map_migrated_app_tag                = var.map_app_id
+  tags                                = var.secret_manager_tags
+  create_momos_secrets_template        = var.create_momos_secrets_template
+}
+
+module "eks-aws-load-balancer-controller-serviceaccount" {
+  source                           = "git@github.com:maybaanIAC/tf-aws-eks-aws-load-balancer-controller-module?ref=v1.13.2"
+  depends_on                       = [module.eks, module.efs]
+  enabled                          = var.alb_controller_enabled
+  cluster_name                     = var.cluster_name
+  cluster_identity_oidc_issuer     = module.eks.eks_oidc_issuer
+  cluster_identity_oidc_issuer_arn = module.eks.openid_connect_provider_arn
+  tags                             = var.eks_alb_controller_serviceaccount_tags
+}
+
+module "eks-helm-cert-manager" {
+  source       = "git@github.com:maybaanIAC/tf-helm-cert-manager-module?ref=v1.13.1"
+  depends_on   = [module.eks-aws-load-balancer-controller-serviceaccount]
+  cluster_name = var.cluster_name
+}
+
+module "eks-helm-aws-load-balancer-controller" {
+  source               = "git@github.com:maybaanIAC/tf-aws-eks-helm-aws-load-balancer-controller-module?ref=v1.13.2"
+  depends_on           = [module.eks-helm-cert-manager]
+  cluster_name         = var.cluster_name
+  alb_ingress_role_arn = module.eks-aws-load-balancer-controller-serviceaccount.alb_ingress_arn
+}
+
+module "redis" {
+
+  source                         = "git@github.com:maybaanIAC/tf-aws-redis-module2.0?ref=v1.13.13"
+  depends_on                     = [module.eks-secret-manager]
+  name                           = var.redis_name
+  redis_clusters                 = var.redis_clusters
+  redis_failover                 = var.redis_failover
+  redis_node_type                = var.redis_node_type
+  redis_port                     = var.redis_port
+  apply_immediately              = var.redis_apply_immediately
+  auto_minor_version_upgrade     = var.redis_auto_minor_version_upgrade
+  availability_zones             = var.redis_availability_zones
+  vpc_id                         = var.vpc_id
+  redis_maintenance_window       = var.redis_maintenance_window
+  redis_snapshot_window          = var.redis_snapshot_window
+  redis_snapshot_retention_limit = var.redis_snapshot_retention_limit
+  tags                           = var.redis_tags
+  subnet_ids                     = var.redis_subnet_ids
+  redis_secret_name              = var.redis_secret_name
+  redis_ingress_rules            = var.redis_ingress_rules
+  map_migration                  = true
+  map_migrated_tag               = var.map_redis_server_id
+  map_migrated_app_tag           = var.map_app_id
+}
+
+module "activemq" {
+  source                     = "git@github.com:maybaanIAC/tf-aws-broker-mq-module?ref=v1.13.11"
+  depends_on                 = [module.eks-secret-manager]
+  name                       = var.activemq_name
+  apply_immediately          = var.activemq_apply_immediately
+  auto_minor_version_upgrade = var.activemq_auto_minor_version_upgrade
+  deployment_mode            = var.activemq_deployment_mode
+  engine_type                = var.activemq_engine_type
+  engine_version             = var.activemq_engine_version
+  host_instance_type         = var.activemq_host_instance_type
+  publicly_accessible        = var.activemq_publicly_accessible
+  general_log                = var.activemq_general_log
+  audit_log                  = var.activemq_audit_log
+  maintenance_day_of_week    = var.activemq_maintenance_day_of_week
+  maintenance_time_of_day    = var.activemq_maintenance_time_of_day
+  maintenance_time_zone      = var.activemq_maintenance_time_zone
+  vpc_id                     = var.vpc_id
+  subnet_ids                 = var.activemq_subnet_ids
+  #security_groups            = var.activemq_security_groups
+  mq_application_user    = var.activemq__application_user
+  tags                   = var.activemq_tags
+  activemq_secret        = var.activemq_secret
+  activemq_ingress_rules = var.activemq_ingress_rules
+  map_migration          = true
+  map_migrated_tag       = var.map_amq_server_id
+  map_migrated_app_tag   = var.map_app_id
+}
